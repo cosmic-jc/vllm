@@ -1336,12 +1336,27 @@ class OpenAIServingChat(OpenAIServing):
 
                 if self.tool_parser is not None:
                     tool_parser = self.tool_parser(tokenizer)
-                    # NOTE: We use token_ids for openai tool parser
-                    tool_call_info = tool_parser.extract_tool_calls(
-                        "",
-                        request=request,
-                        token_ids=token_ids,  # type: ignore
-                    )
+                    # Check if the tool parser accepts token_ids (e.g., OpenAIToolParser)
+                    # or requires text input (e.g., KimiK2ToolParser, DeepSeekV3ToolParser)
+                    import inspect
+                    sig = inspect.signature(tool_parser.extract_tool_calls)
+                    if 'token_ids' in sig.parameters:
+                        # OpenAIToolParser: pass token_ids directly
+                        tool_call_info = tool_parser.extract_tool_calls(
+                            "",
+                            request=request,
+                            token_ids=token_ids,  # type: ignore
+                        )
+                    else:
+                        # Other parsers: decode tokens to text, preserving special tokens
+                        model_output = tokenizer.decode(
+                            token_ids,
+                            skip_special_tokens=False
+                        )
+                        tool_call_info = tool_parser.extract_tool_calls(
+                            model_output,
+                            request=request,
+                        )
                     content = tool_call_info.content
                     message = ChatMessage(
                         role=role,

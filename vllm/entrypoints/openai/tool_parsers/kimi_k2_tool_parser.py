@@ -214,7 +214,7 @@ class KimiK2ToolParser(ToolParser):
                 if diff:
                     diff = (
                         diff.encode("utf-8").decode("unicode_escape")
-                        if diff is str
+                        if isinstance(diff, str)
                         else diff
                     )
                     if '"}' not in delta_text:
