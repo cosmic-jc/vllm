@@ -266,14 +266,25 @@ class AnthropicServingMessages(OpenAIServingChat):
         elif generator.choices[0].finish_reason == "tool_calls":
             result.stop_reason = "tool_use"
 
-        content: list[AnthropicContentBlock] = [
-            AnthropicContentBlock(
-                type="text",
-                text=generator.choices[0].message.content
-                if generator.choices[0].message.content
-                else "",
+        content: list[AnthropicContentBlock] = []
+
+        # Add reasoning content if present (from reasoning parser)
+        if generator.choices[0].message.reasoning:
+            content.append(
+                AnthropicContentBlock(
+                    type="text",
+                    text=generator.choices[0].message.reasoning,
+                )
             )
-        ]
+
+        # Add regular content if present
+        if generator.choices[0].message.content:
+            content.append(
+                AnthropicContentBlock(
+                    type="text",
+                    text=generator.choices[0].message.content,
+                )
+            )
 
         for tool_call in generator.choices[0].message.tool_calls:
             anthropic_tool_call = AnthropicContentBlock(
@@ -361,32 +372,75 @@ class AnthropicServingMessages(OpenAIServingChat):
                             finish_reason = origin_chunk.choices[0].finish_reason
                             continue
 
-                        # content
-                        if origin_chunk.choices[0].delta.content is not None:
-                            if not content_block_started:
-                                chunk = AnthropicStreamEvent(
-                                    index=content_block_index,
-                                    type="content_block_start",
-                                    content_block=AnthropicContentBlock(
-                                        type="text", text=""
-                                    ),
-                                )
-                                data = chunk.model_dump_json(exclude_unset=True)
-                                yield wrap_data_with_event(data, "content_block_start")
-                                content_block_started = True
+                        # Handle reasoning and/or content from delta
+                        # Both can be present in the same delta (when </think> appears)
+                        has_reasoning = origin_chunk.choices[0].delta.reasoning is not None
+                        has_content = origin_chunk.choices[0].delta.content is not None
 
-                            if origin_chunk.choices[0].delta.content == "":
-                                continue
-                            chunk = AnthropicStreamEvent(
-                                index=content_block_index,
-                                type="content_block_delta",
-                                delta=AnthropicDelta(
-                                    type="text_delta",
-                                    text=origin_chunk.choices[0].delta.content,
-                                ),
-                            )
-                            data = chunk.model_dump_json(exclude_unset=True)
-                            yield wrap_data_with_event(data, "content_block_delta")
+                        if has_reasoning or has_content:
+                            # Start reasoning text block if needed
+                            if has_reasoning:
+                                if not content_block_started:
+                                    chunk = AnthropicStreamEvent(
+                                        index=content_block_index,
+                                        type="content_block_start",
+                                        content_block=AnthropicContentBlock(
+                                            type="text", text=""
+                                        ),
+                                    )
+                                    data = chunk.model_dump_json(exclude_unset=True)
+                                    yield wrap_data_with_event(data, "content_block_start")
+                                    content_block_started = True
+
+                                if origin_chunk.choices[0].delta.reasoning != "":
+                                    chunk = AnthropicStreamEvent(
+                                        index=content_block_index,
+                                        type="content_block_delta",
+                                        delta=AnthropicDelta(
+                                            type="text_delta",
+                                            text=origin_chunk.choices[0].delta.reasoning,
+                                        ),
+                                    )
+                                    data = chunk.model_dump_json(exclude_unset=True)
+                                    yield wrap_data_with_event(data, "content_block_delta")
+
+                            # Handle content
+                            # If both reasoning and content are present, close reasoning block first
+                            if has_content:
+                                if has_reasoning and content_block_started:
+                                    # Close the reasoning block
+                                    stop_chunk = AnthropicStreamEvent(
+                                        index=content_block_index,
+                                        type="content_block_stop",
+                                    )
+                                    data = stop_chunk.model_dump_json(exclude_unset=True)
+                                    yield wrap_data_with_event(data, "content_block_stop")
+                                    content_block_started = False
+                                    content_block_index += 1
+
+                                if not content_block_started:
+                                    chunk = AnthropicStreamEvent(
+                                        index=content_block_index,
+                                        type="content_block_start",
+                                        content_block=AnthropicContentBlock(
+                                            type="text", text=""
+                                        ),
+                                    )
+                                    data = chunk.model_dump_json(exclude_unset=True)
+                                    yield wrap_data_with_event(data, "content_block_start")
+                                    content_block_started = True
+
+                                if origin_chunk.choices[0].delta.content != "":
+                                    chunk = AnthropicStreamEvent(
+                                        index=content_block_index,
+                                        type="content_block_delta",
+                                        delta=AnthropicDelta(
+                                            type="text_delta",
+                                            text=origin_chunk.choices[0].delta.content,
+                                        ),
+                                    )
+                                    data = chunk.model_dump_json(exclude_unset=True)
+                                    yield wrap_data_with_event(data, "content_block_delta")
                             continue
 
                         # tool calls
